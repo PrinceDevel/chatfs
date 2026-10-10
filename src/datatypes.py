@@ -16,3 +16,13 @@ class Message:
     receiver_id: int
     body: str
     ts: int  # unix timestamp (seconds)
+
+
+@dataclass
+class GroupMessage:
+    id: int
+    group_id: int
+    sender_id: int
+    body: str
+    ts: int
+    sender_name: str = ""

@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from fasthtml.common import *
 from starlette.responses import RedirectResponse, Response
 
-from datatypes import Message, User
+from datatypes import GroupMessage, Message, User
 
 # ───────────────────────────── Database ─────────────────────────────
 
@@ -31,6 +31,26 @@ CREATE TABLE IF NOT EXISTS messages(
     ts          INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_pair ON messages(sender_id, receiver_id, id);
+
+CREATE TABLE IF NOT EXISTS groups(
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    created    INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS group_members(
+    group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    user_id  INTEGER NOT NULL REFERENCES users(id),
+    PRIMARY KEY (group_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS group_messages(
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id  INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    sender_id INTEGER NOT NULL REFERENCES users(id),
+    body      TEXT NOT NULL,
+    ts        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_group_messages ON group_messages(group_id, id);
 """
 
 
@@ -90,6 +110,53 @@ def thread(a: int, b: int, after: int = 0, limit: int = 100) -> list[Message]:
     return [Message(**dict(r)) for r in rows]
 
 
+# ───────────────────────────── Groups ─────────────────────────────
+
+def is_member(gid: int, uid: int) -> bool:
+    with db() as c:
+        return c.execute("SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?", (gid, uid)).fetchone() is not None
+
+
+def get_group(gid: int) -> dict | None:
+    with db() as c:
+        r = c.execute("SELECT * FROM groups WHERE id = ?", (gid,)).fetchone()
+    return dict(r) if r else None
+
+
+def group_member_names(gid: int) -> list[str]:
+    with db() as c:
+        rows = c.execute("""SELECT u.name FROM group_members gm JOIN users u ON u.id = gm.user_id
+                            WHERE gm.group_id = ? ORDER BY u.name""", (gid,)).fetchall()
+    return [r["name"] for r in rows]
+
+
+def my_groups(me_id: int) -> list[dict]:
+    """Groups the user belongs to, most recently active first."""
+    with db() as c:
+        rows = c.execute(
+            """SELECT g.id, g.name,
+                      (SELECT u.name || ': ' || m.body FROM group_messages m JOIN users u ON u.id = m.sender_id
+                       WHERE m.group_id = g.id ORDER BY m.id DESC LIMIT 1) AS preview,
+                      (SELECT MAX(m.id) FROM group_messages m WHERE m.group_id = g.id) AS last_id
+               FROM groups g JOIN group_members gm ON gm.group_id = g.id AND gm.user_id = ?
+               ORDER BY last_id IS NULL, last_id DESC, g.id DESC""",
+            (me_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def group_thread(gid: int, after: int = 0, limit: int = 100) -> list[GroupMessage]:
+    with db() as c:
+        rows = c.execute(
+            """SELECT * FROM (
+                   SELECT m.*, u.name AS sender_name FROM group_messages m JOIN users u ON u.id = m.sender_id
+                   WHERE m.group_id = ? AND m.id > ? ORDER BY m.id DESC LIMIT ?
+               ) ORDER BY id""",
+            (gid, after, limit),
+        ).fetchall()
+    return [GroupMessage(**dict(r)) for r in rows]
+
+
 # ───────────────────────────── Passwords ─────────────────────────────
 
 _SCRYPT = dict(n=2**14, r=8, p=1)
@@ -116,6 +183,8 @@ DUMMY_HASH = hash_password(secrets.token_hex(8))
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,20}$")
 MIN_PASSWORD = 8
 MAX_MESSAGE = 2000
+MAX_GROUP_NAME = 40
+MAX_GROUP_MEMBERS = 50
 
 # Tiny in-memory brute-force guard: 5 failed logins per 5 minutes per (ip, username).
 _fails: dict[str, list[float]] = {}
@@ -136,11 +205,24 @@ CSS = """
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
 a{color:var(--accent)}
+input[type=checkbox]{width:auto;accent-color:var(--accent)}
 input{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font:inherit;width:100%}
 input:focus-visible,button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 button{background:var(--accent);color:var(--accent-ink);border:0;border-radius:8px;padding:11px 18px;font:inherit;font-weight:700;cursor:pointer}
 button:hover{filter:brightness(1.08)}
 button.ghost{background:transparent;color:var(--muted);border:1px solid var(--line);padding:6px 10px;font-weight:500;font-size:.85rem}
+
+.section-label{display:flex;justify-content:space-between;align-items:center;padding:12px 14px 4px;color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.08em}
+.new-group{text-decoration:none;font-weight:700;letter-spacing:0;text-transform:none;font-size:.82rem}
+.avatar.group{border-radius:10px}
+.chat-head .sub{color:var(--muted);font-size:.8rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:48vw}
+.chat-head form{margin:0 0 0 auto}
+.sender{font-size:.72rem;font-weight:600;color:var(--accent);margin:0 4px 2px}
+.group-form{padding:24px;overflow-y:auto;display:flex;flex-direction:column;gap:14px;max-width:520px}
+.group-form h3{margin:0}
+.pick{display:flex;flex-direction:column;gap:2px;max-height:45vh;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:6px}
+.pick label{display:flex;align-items:center;gap:10px;padding:8px;border-radius:6px;cursor:pointer}
+.pick label:hover{background:var(--panel2)}
 
 /* auth pages */
 .auth-wrap{max-width:400px;margin:10vh auto;padding:32px;background:var(--panel);border:1px solid var(--line);border-radius:14px}
@@ -348,9 +430,10 @@ def logout(sess):
 
 # ───────────────────────────── Chat UI ─────────────────────────────
 
-def bubble(m: Message, me_id: int):
+def bubble(m, me_id: int, show_name: bool = False):
     mine = m.sender_id == me_id
     return Div(
+        Span(m.sender_name, cls="sender") if show_name and not mine else None,
         Div(m.body, cls="bubble"),  # FastHTML escapes text, so user input can't inject HTML
         Span(cls="ts", data_ts=m.ts),
         cls="msg " + ("mine" if mine else "theirs"),
@@ -358,22 +441,28 @@ def bubble(m: Message, me_id: int):
     )
 
 
-def contact_links(me_id: int, active: int = 0):
-    links = []
-    for r in contacts(me_id):
-        links.append(
-            A(
-                Div(r["name"][0].upper(), cls="avatar"),
-                Div(Div(r["name"], cls="c-name"), Div((r["preview"] or "No messages yet")[:50], cls="c-prev"), cls="c-meta"),
-                href=f"/chat/{r['id']}",
-                cls="contact" + (" active" if r["id"] == active else ""),
-                data_name=r["name"].lower(),
-            )
-        )
-    return links or [P("No one else has joined yet. Share this app's link so a friend can register.", cls="empty-note")]
+def _item(avatar, name, preview, href, active, cls=""):
+    return A(
+        Div(avatar, cls="avatar " + cls),
+        Div(Div(name, cls="c-name"), Div(preview[:50], cls="c-prev"), cls="c-meta"),
+        href=href, cls="contact" + (" active" if active else ""), data_name=name.lower(),
+    )
 
 
-def shell(me: User, main_content, active: int = 0):
+def sidebar_links(me_id: int, active: str = ""):
+    """`active` is "u:<id>" for a direct chat, "g:<id>" for a group, "new" for the new-group form."""
+    out = [Div(Span("Groups"), A("+ New", href="/groups/new", cls="new-group"), cls="section-label")]
+    groups = [_item("#", g["name"], g["preview"] or "No messages yet", f"/group/{g['id']}", active == f"g:{g['id']}", "group")
+              for g in my_groups(me_id)]
+    out += groups or [P("No groups yet.", cls="empty-note")]
+    out.append(Div(Span("People"), cls="section-label"))
+    people = [_item(r["name"][0].upper(), r["name"], r["preview"] or "No messages yet", f"/chat/{r['id']}", active == f"u:{r['id']}")
+              for r in contacts(me_id)]
+    out += people or [P("No one else has joined yet. Share this app's link so a friend can register.", cls="empty-note")]
+    return out
+
+
+def shell(me: User, main_content, active: str = ""):
     return (
         Title("CHATFS"),
         Div(
@@ -387,7 +476,7 @@ def shell(me: User, main_content, active: int = 0):
                 ),
                 Div(Input(type="search", id="search", placeholder="Find a user...", oninput="filterContacts(this.value)",
                           autocomplete="off"), cls="search"),
-                Div(*contact_links(me.id, active), id="contacts",
+                Div(*sidebar_links(me.id, active), id="contacts",
                     hx_get=f"/contacts?active={active}", hx_trigger="every 5s", hx_swap="innerHTML"),
                 cls="sidebar",
             ),
@@ -404,8 +493,8 @@ def home(auth):
 
 
 @app.get("/contacts")
-def contacts_fragment(auth, active: int = 0):
-    return tuple(contact_links(auth.id, active))
+def contacts_fragment(auth, active: str = ""):
+    return tuple(sidebar_links(auth.id, active))
 
 
 @app.get("/chat/{other_id}")
@@ -430,7 +519,7 @@ def chat(other_id: int, auth):
         ),
         style="display:contents",
     )
-    return shell(auth, panel, active=other.id)
+    return shell(auth, panel, active=f"u:{other.id}")
 
 
 @app.get("/chat/{other_id}/poll")
@@ -456,4 +545,102 @@ def send(other_id: int, auth, text: str = ""):
     return Response(status_code=204)
 
 
+
+# ───────────────────────────── Group chat ─────────────────────────────
+
+@app.get("/groups/new")
+def new_group_form(auth, error: str = ""):
+    others = contacts(auth.id)
+    form = Form(
+        H3("New group"),
+        Div(error, cls="error", role="alert") if error else None,
+        Label(H3("Group name", style="margin-bottom: 12px;"), Input(name="name", required=True, maxlength=str(MAX_GROUP_NAME), placeholder="Hackathon team", autofocus=True)),
+        Div("Add people", cls="hint"),
+        Div(*[Label(Input(type="checkbox", name="members", value=str(u["id"])), u["name"]) for u in others], cls="pick")
+        if others else P("No other users yet. Ask a friend to register first.", cls="empty-note"),
+        Button("Create group", type="submit"),
+        method="post", action="/groups", cls="group-form",
+    )
+    return shell(auth, form, active="new")
+
+
+@app.post("/groups")
+async def create_group(request, auth):
+    form = await request.form()
+    name = (form.get("name") or "").strip()
+    wanted = {int(v) for v in form.getlist("members") if v.isdigit()} - {auth.id}
+    if not name or len(name) > MAX_GROUP_NAME:
+        return RedirectResponse("/groups/new?error=Give+the+group+a+name+(max+40+characters).", status_code=303)
+    with db() as c:
+        if wanted:
+            marks = ",".join("?" * len(wanted))
+            wanted = {r["id"] for r in c.execute(f"SELECT id FROM users WHERE id IN ({marks})", tuple(wanted))}  # only real users
+        if not wanted or len(wanted) + 1 > MAX_GROUP_MEMBERS:
+            return RedirectResponse("/groups/new?error=Pick+at+least+one+person+(max+50+members).", status_code=303)
+        gid = c.execute("INSERT INTO groups(name, created_by, created) VALUES (?, ?, ?)", (name, auth.id, int(time.time()))).lastrowid
+        c.executemany("INSERT INTO group_members(group_id, user_id) VALUES (?, ?)", [(gid, u) for u in wanted | {auth.id}])
+    return RedirectResponse(f"/group/{gid}", status_code=303)
+
+
+@app.get("/group/{gid}")
+def group_chat(gid: int, auth):
+    group = get_group(gid)
+    if group is None or not is_member(gid, auth.id):  # non-members can't tell whether the group exists
+        return RedirectResponse("/", status_code=303)
+    members = group_member_names(gid)
+    msgs = group_thread(gid)
+    panel = Div(
+        Div(A("←", href="/", cls="back", aria_label="Back to contacts"), Div("#", cls="avatar group"),
+            Div(H3(group["name"]), Div(f"{len(members)} members: " + ", ".join(members), cls="sub")),
+            Form(Button("Leave", type="submit", cls="ghost"), method="post", action=f"/group/{gid}/leave"),
+            cls="chat-head"),
+        Div(*[bubble(m, auth.id, show_name=True) for m in msgs], id="chat-box",
+            hx_get=f"/group/{gid}/poll", hx_trigger="every 2s, poll", hx_vals="js:{after: lastMsgId()}",
+            hx_swap="beforeend", hx_sync="this:drop"),
+        Form(
+            Input(type="text", name="text", id="msg-input", placeholder=f"Message {group['name']}", autocomplete="off",
+                  maxlength=str(MAX_MESSAGE), required=True, autofocus=True),
+            Button("Send", type="submit"),
+            hx_post=f"/group/{gid}/send", hx_swap="none",
+            hx_on__after_request="if(event.detail.successful){this.reset();htmx.trigger('#chat-box','poll')}",
+            cls="composer",
+        ),
+        style="display:contents",
+    )
+    return shell(auth, panel, active=f"g:{gid}")
+
+
+@app.get("/group/{gid}/poll")
+def group_poll(gid: int, auth, after: int = 0):
+    if not is_member(gid, auth.id):
+        return Response(status_code=403)
+    msgs = group_thread(gid, after)
+    if not msgs:
+        return Response(status_code=204)
+    return tuple(bubble(m, auth.id, show_name=True) for m in msgs)
+
+
+@app.post("/group/{gid}/send")
+def group_send(gid: int, auth, text: str = ""):
+    text = text.strip()
+    if not is_member(gid, auth.id):
+        return Response("Not a member", status_code=403)
+    if not text or len(text) > MAX_MESSAGE:
+        return Response("Invalid message", status_code=400)
+    with db() as c:
+        c.execute("INSERT INTO group_messages(group_id, sender_id, body, ts) VALUES (?, ?, ?, ?)",
+                  (gid, auth.id, text, int(time.time())))
+    return Response(status_code=204)
+
+
+@app.post("/group/{gid}/leave")
+def group_leave(gid: int, auth):
+    with db() as c:
+        c.execute("DELETE FROM group_members WHERE group_id = ? AND user_id = ?", (gid, auth.id))
+        if c.execute("SELECT COUNT(*) FROM group_members WHERE group_id = ?", (gid,)).fetchone()[0] == 0:
+            c.execute("DELETE FROM groups WHERE id = ?", (gid,))  # last one out: messages cascade away
+    return RedirectResponse("/", status_code=303)
+
+
 serve()
+
