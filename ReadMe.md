@@ -25,10 +25,9 @@ If you don't have `uv` installed on your system yet, you can install it using yo
   ```bash
   curl -LsSf https://astral.sh/uv/install.sh | sh
   ```
+
 * **Windows (PowerShell):**
-  ```powershell
-  irm https://astral.sh/uv/install.ps1 | iex
-  ```
+Visit their official website: ==https://docs.astral.sh/uv/getting-started/installation/#__tabbed_1_2==
 
 *Verify the installation:*
 ```bash
