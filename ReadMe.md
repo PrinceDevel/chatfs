@@ -39,7 +39,7 @@ uv --version
 
 ### Step 2: Clone or Setup the Project
 
-1. Navigate to your project directory containing `main.py`.
+1. Navigate to your project directory containing `src` folder.
 2. Initialize a new `uv` environment and install dependencies:
 
 ```bash
@@ -49,7 +49,7 @@ uv venv
 # Sync The local repo
 uv sync
 
-# Install required packages (FastHTML and Starlette) (incase uv sync doesn't work)
+# NOTE: Use Only If uv sync doesn't work (it should though)
 uv pip install python-fasthtml fastlite 
 ```
 
@@ -69,5 +69,5 @@ Open your browser and navigate to **`http://localhost:5001`** (or the port speci
 
 ## 🛠️ Project Structure
 
-* `main.py`: Core application logic, database schema initialization, authentication middleware, and FastHTML routes.
+* `src`: Core application logic, database schema initialization, authentication middleware, and FastHTML routes.
 * `chatfs.db`: Local SQLite database (auto-generated on first launch).
