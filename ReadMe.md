@@ -1,4 +1,4 @@
-# CHATFS 💬
+# CHATFS 
 
 **CHATFS** is a lightning-fast, lightweight, and private real-time chat application built with Python using **FastHTML**, **Starlette**, and **SQLite**. Designed with a sleek dark-mode interface, it features instant messaging, live polling via HTMX, secure password hashing, and zero-bloat architecture.
 
@@ -46,24 +46,21 @@ uv --version
 # Initialize a virtual environment
 uv venv
 
-# Activate the virtual environment
-# On macOS/Linux:
-source .venv/bin/activate
-# On Windows:
-.venv\Scripts\activate
+# Sync The local repo
+uv sync
 
-# Install required packages (FastHTML and Starlette)
+# Install required packages (FastHTML and Starlette) (incase uv sync doesn't work)
 uv pip install python-fasthtml fastlite 
 ```
 
 ---
 
-### Step 4: Run the Application
+### Step 3: Run the Application
 
 Start the development server directly using Python or `uv`:
 
 ```bash
-uv run main.py
+uv run src/main.py
 ```
 
 Open your browser and navigate to **`http://localhost:5001`** (or the port specified in your console output) to register your account and start chatting!
